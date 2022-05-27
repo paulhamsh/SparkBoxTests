@@ -71,6 +71,7 @@ bool  update_spark_state() {
 
   if (spark_state == SPARK_SYNCING) {  
     if (preset_requested <= 5 && preset_received == true) {
+      spark_msg_out.get_serial();
       spark_msg_out.get_preset_details((preset_requested == 5) ? 0x0100 : preset_requested);
       preset_received = false;
       DEBUG("REQUESTED A PRESET");  
@@ -114,7 +115,7 @@ bool  update_spark_state() {
         if (spark_state == SPARK_SYNCING) {
           if (!preset_received) {
             if (preset_requested == pres) {
-              delay(200);
+
               preset_received = true;
               preset_requested++;
               if (preset_requested == 4) // can't ask for 4!
