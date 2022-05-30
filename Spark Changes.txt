@@ -1,0 +1,769 @@
+Edits for PH board:
+
+config.h
+--------
+##add
+const uint8_t switchPins[]{33,14,27,26};  // PH EDIT
+###comment out
+//#define ACTIVE_HIGH
+
+UI.h
+----
+##comment out
+//#define CHRG_AIN 33       // Charge pin sense GPIO (10k pull-up)
+##add
+#define CHRG_AIN 35       // Charge pin sense (10k pull-up)         // PH EDIT
+
+
+Other changes:
+
+UI.ino
+------
+##add to onLongPress(), to allow for a pedal press to restart SparkBoxW
+
+      case 8:
+        esp_restart(); 
+        break;
+
+SparkComms.h
+------------
+##replace value
+#define SPARK_BT_NAME    "Spark MINI BLE"
+
+##add
+bool got_param_callback;
+
+SparkComms.ino
+--------------
+
+##add after   is_ble = true; in connect_to_all()
+  got_param_callback = false;
+
+##replace after init(
+  BLEDevice::init(SPARK_BT_NAME);
+
+##add after   pClient_sp->setClientCallbacks(new MyClientCallback()); in connect_to_all()
+  BLEDevice::setMTU(517);
+
+
+##replace MyClientCallback
+class MyClientCallback : public BLEClientCallbacks
+{
+  void onConnect(BLEClient *pclient)
+  {
+    DEBUG("callback: Spark connected");
+    set_conn_status_connected(SPK);
+    //oled.displayOn(); //debug
+  }
+
+  void onDisconnect(BLEClient *pclient)
+  {
+//    if (pclient->isConnected()) {
+
+    connected_sp = false;         
+    DEBUG("callback: Spark disconnected");   
+    set_conn_status_disconnected(SPK);   
+  }
+
+#ifndef CLASSIC
+  bool onConnParamsUpdateRequest(BLEClient* pClient, const ble_gap_upd_params* params) {
+    DEBUG("Connection callback");
+    got_param_callback = true;
+    return true;
+  };
+#endif
+};
+
+
+
+SparkIO.ino
+-----------
+##add
+void MessageOut::get_checksum_info() {
+   start_message (0x022a);
+   write_byte(0x94);
+   write_uint(0);
+   write_uint(1);
+   write_uint(2);
+   write_uint(3);   
+   end_message();   
+}
+
+void MessageOut::get_firmware() {
+   start_message (0x022f);
+   end_message(); 
+}
+
+SparkIO.h
+---------
+
+##add at top ky license_key[64];
+bool is_spark_mini = false;
+
+##add in MessageOut class
+
+    void get_checksum_info();
+    void get_firmware();
+
+## replace BlockOut::process()
+void BlockOut::process() {
+  int i;
+  int len;
+  uint8_t b;  
+  uint8_t cmd, sub;
+
+  while (!out_chunk->is_empty() && *ok_to_send) {
+    ob_pos = 16;
+
+    for (i=0; i < 16; i++) 
+      out_block[i]= blk_hdr[i];
+      
+    b = 0;
+
+    // This condition is complex because sending to the Spark is always a block ending in 0xf7 and chunk aligned
+    // but the Spark sends a slew of data until it runs out, and the block contains multiple and partial
+    // chunks, and with a different block size - inconsistent
+    
+    while (    (!to_spark && (ob_pos < block_size && !out_chunk->is_empty())) 
+            || ( to_spark && (b != 0xf7))   ) {
+      out_chunk->get(&b);
+      
+      // look for cmd and sub in the stream and set blocking to true if 0x0101 found - multi chunk
+      // not sure if that should be here because it means the block send needs to understand the chunks content
+      // perhaps it should be between converting msgpack to chunks and put flow control in there
+      if (ob_pos == 20) 
+        cmd = b;
+      if (ob_pos == 21)
+        sub = b;
+
+      out_block[ob_pos++] = b;
+    }
+    
+    out_block[6] = ob_pos;
+    if (is_spark_mini)
+      data_write(out_block + 16, ob_pos - 16); // skip the block header
+    else 
+      data_write(out_block, ob_pos);
+      
+
+
+
+/*
+    for (i=0; i<ob_pos;i++) {
+      b=out_block[i];
+      if (b<16) Serial.print("0");
+      Serial.print(b, HEX);
+      Serial.print(" ");
+      if (i%16 ==15) Serial.println();
+    }
+    Serial.println();
+*/
+    if (to_spark) {
+      if (cmd == 0x01 && sub == 0x01) {// need to ensure we are only blocking on send to spark!
+          *ok_to_send = false;
+          last_sent_time = millis();  
+          DEBUG("Blocked");
+      }
+    }
+  }
+}
+
+##repalce BlockIn::process
+void BlockIn::process() {
+  uint8_t b;
+  bool boo;
+
+  while (data_available()) {
+    b = data_read();
+   
+    // **** PASSTHROUGH APP AND AMP ****
+
+    if (pass_through) {
+      if (io_state == 0) {
+        if (b == 0x01) {  // block passthough
+          io_state = 1;
+        } 
+        else if (b == 0xf0) { // chunk passthrough (for Spark Mini)
+          io_state = 101;
+          io_buf[0] = 0xf0;
+          io_pos = 1;
+          io_len = MAX_IO_BUFFER;          
+        }
+      }
+      else if (io_state == 1) {
+        if (b == 0xfe) {
+          io_state = 2;
+          io_buf[0] = 0x01;
+          io_buf[1] = 0xfe;
+          io_pos = 2;
+          io_len = MAX_IO_BUFFER;
+        }
+        else if (b == 0x01) {
+          io_state = 1;
+        }
+        else
+          io_state = 0;
+      }
+      else if (io_state == 2) {
+        if (io_pos == 6) {
+          io_len = b;
+        }
+        io_buf[io_pos++] = b;
+        if (io_pos >= io_len) {         // could only be > if the earlier matching was fooled and len is <= 6
+          data_write(io_buf, io_pos);
+
+          io_pos = 0;
+          io_len = MAX_IO_BUFFER; 
+          io_state = 0; 
+        }
+      }
+      else if (io_state == 101) { // chunk passthrough only
+        io_buf[io_pos++] = b;
+        if (b == 0xf7) { 
+          data_write(io_buf, io_pos);
+
+          io_pos = 0;
+          io_len = MAX_IO_BUFFER; 
+          io_state = 0; 
+        }
+      }
+
+      if (io_pos > MAX_IO_BUFFER) {
+        DEBUG("SPARKIO IO_PROCESS_IN_BLOCKS OVERRUN");
+        while (true);
+      }
+    }
+    // **** END PASSTHROUGH ****
+
+   
+    // check the 7th byte which holds the block length
+
+    if (rb_state == 0 && b == 0xf0) { // chunk header not block header
+      rb_state = 101;
+    }
+    else if (rb_state == 6) {
+      rb_len = b - 16;
+      rb_state++;
+    }  // check every other byte in the block header for a match to the header standard
+    else if (rb_state >= 0 && rb_state < 16) {
+      if (b == blk_hdr[rb_state]) {
+        rb_state++;
+      }
+      else {
+        Serial.print("Bad block header at position: ");
+        Serial.print(rb_state);
+        Serial.print(" data: ");
+        Serial.print(b, HEX);
+        Serial.print(" expected: ");
+        Serial.print(blk_hdr[rb_state], HEX);
+        Serial.println();
+        rb_state = 0;
+        if (b == blk_hdr[rb_state])  // in case we found 0x01, the start of the header
+          rb_state++;
+      }
+    } 
+    // and once past the header just read the next bytes as defined by rb_len
+    // store these to the chunk buffer
+    else if (rb_state == 16) {
+      rb->add(b);
+      
+        
+      if (b < 16) Serial.print("0");
+      Serial.print(b, HEX);
+      Serial.print("+");     
+
+      rb_len--;
+      if (rb_len == 0) {
+        rb_state = 0;
+        rb->commit();
+        Serial.println();
+      }
+    }
+    
+    if (rb_state == 101) {
+      rb->add(b);     
+
+      if (b < 16) Serial.print("0");
+      Serial.print(b, HEX);
+      Serial.print("-");
+
+      if (b == 0xf7) {
+        rb_state == 0;
+        rb->commit(); 
+        Serial.println();              
+      }  
+    }
+  }
+}
+
+Spark.h
+-------
+##replace
+enum spark_status_values {SPARK_DISCONNECTED, SPARK_CONNECTED, SPARK_COMMUNICATING, SPARK_CHECKSUM, SPARK_SYNCING, SPARK_SYNCED};
+
+Spark.ino
+---------
+##loads of changes, just replace with a new file:
+///// ROUTINES TO SYNC TO AMP SETTINGS
+
+int selected_preset;
+bool ui_update_in_progress;
+int preset_requested;
+bool preset_received;
+
+int get_effect_index(char *str) {
+  int ind, i;
+
+  ind = -1;
+  for (i = 0; ind == -1 && i <= 6; i++) {
+    if (strcmp(presets[5].effects[i].EffectName, str) == 0) {
+      ind  = i;
+    }
+  }
+  return ind;
+}
+
+bool  spark_state_tracker_start() {
+  spark_state = SPARK_DISCONNECTED;
+  // try to find and connect to Spark - returns false if failed to find Spark
+  if (!connect_to_all()) return false;    
+                
+  spark_start(false);                  // set up the classes to communicate with Spark and app
+  spark_state = SPARK_CONNECTED;     // it has to be to have reached here
+
+  spark_ping_timer = millis();
+  selected_preset = 0;
+  ui_update_in_progress = false;
+
+  return true;
+}
+
+// get changes from app or Spark and update internal state to reflect this
+// this function has the side-effect of loading cmdsub, msg and preset which can be used later
+
+bool  update_spark_state() {
+  int pres, ind;
+
+  // sort out connection and sync progress
+  if (conn_status[SPK] == false && spark_state != SPARK_DISCONNECTED) {
+    spark_state = SPARK_DISCONNECTED;
+    spark_ping_timer = millis();
+    DEBUG("SPARK DISCONNECTED, TRY TO CONNECT");
+  }
+
+
+  if (spark_state == SPARK_DISCONNECTED) {
+    if (millis() - spark_ping_timer > 100) {
+      spark_ping_timer = millis();
+      connect_spark();  // reconnects if any disconnects happen    
+    }
+  }
+
+  if (conn_status[SPK] == true && spark_state == SPARK_DISCONNECTED) {
+    spark_state = SPARK_CONNECTED;
+    DEBUG("SPARK CONNECTED");
+  }
+
+  if (spark_state == SPARK_CONNECTED) {
+    if (millis() - spark_ping_timer > 500) {
+      // every 0.5s ping the Spark amp to see if it will respond
+      spark_ping_timer = millis();
+      spark_msg_out.get_serial();
+      DEBUG("PINGING SPARK");  
+    }  
+  }
+
+  if (spark_state == SPARK_SYNCING) {  
+    if (preset_requested <= 5 && preset_received == true) {
+      spark_msg_out.get_preset_details((preset_requested == 5) ? 0x0100 : preset_requested);
+      if (preset_requested <= 3)
+        spark_msg_out.change_hardware_preset(0, preset_requested);
+      preset_received = false;
+      DEBUG("REQUESTED A PRESET");  
+    }
+  }
+
+  if (spark_state == SPARK_COMMUNICATING) {
+    spark_msg_out.get_firmware();
+    spark_msg_out.get_checksum_info();
+    preset_requested = 0;
+    preset_received = true;
+    spark_state = SPARK_CHECKSUM;
+  }
+
+  
+  spark_process();
+  app_process();
+  
+  // K&R: Expressions connected by && or || are evaluated left to right, 
+  // and it is guaranteed that evaluation will stop as soon as the truth or falsehood is known.
+  
+  if (spark_msg_in.get_message(&cmdsub, &msg, &preset) || app_msg_in.get_message(&cmdsub, &msg, & preset)) {
+    Serial.print("Message: ");
+    Serial.println(cmdsub, HEX);
+
+    // all the processing for sync
+    switch (cmdsub) {
+      // if serial number response then we know the connection is good
+      case 0x0323:
+        if (spark_state == SPARK_CONNECTED) {
+          spark_state = SPARK_COMMUNICATING;
+          DEBUG("RECEIVED SERIAL NUMBER - GOT CONNECTION");
+        }
+        break;
+      case 0x032a:
+        if (spark_state == SPARK_CHECKSUM) {
+          spark_state = SPARK_SYNCING;
+          DEBUG("GOT CHECKSUM");
+          delay(4000);
+        }
+        break;       
+      // full preset details
+      case 0x0101:
+      case 0x0301:  
+        pres = (preset.preset_num == 0x7f) ? 4 : preset.preset_num;
+        if (preset.curr_preset == 0x01)
+          pres = 5;
+
+        presets[pres] = preset;
+
+        DEBUG("GOT A PRESET");
+        DEBUG(pres);
+        
+        if (spark_state == SPARK_SYNCING) {
+          if (!preset_received) {
+            if (preset_requested == pres) {
+              preset_received = true;
+              preset_requested++;
+              if (preset_requested == 4) // can't ask for 4!
+                preset_requested++;
+            }
+          }
+          if (pres == 5) {
+            spark_state = SPARK_SYNCED;
+            sp_bin.pass_through = true;
+            app_bin.pass_through = true;             
+            DEBUG("FULLY SYNCED NOW");
+          }
+        }
+
+        // Only update the displayed preset number for HW presets
+        if (pres < 4){
+          display_preset_num = pres; 
+        }
+        #ifdef DUMP_ON
+          Serial.printf("Send / receive new preset: %x\n", p);      
+          dump_preset(preset);
+        #endif
+        break;
+      // change of amp model
+      case 0x0306:
+        strcpy(presets[5].effects[3].EffectName, msg.str2);
+        break;
+      // change of effect
+      case 0x0106:
+        ind = get_effect_index(msg.str1);
+        if (ind >= 0) strcpy(presets[5].effects[ind].EffectName, msg.str2);
+        setting_modified = true;
+        break;
+      // effect on/off  
+      case 0x0115:
+      case 0x0315:
+        ind = get_effect_index(msg.str1);
+        if (ind >= 0) presets[5].effects[ind].OnOff = msg.onoff;
+        setting_modified = true;  
+        break;
+      // change parameter value  
+      case 0x0104:
+      case 0x0337:
+        //expression_target = false;
+        ind = get_effect_index(msg.str1);
+        if (ind >= 0) presets[5].effects[ind].Parameters[msg.param1] = msg.val;
+        strcpy(param_str, msg.str1);
+        param = msg.param1;
+        setting_modified = true;
+        break;  
+
+      // Send licence key   
+      case 0x0170:
+        break; 
+          
+      // change to preset  
+      case 0x0138:
+      case 0x0338:
+        selected_preset = (msg.param2 == 0x7f) ? 4 : msg.param2;
+        presets[5] = presets[selected_preset];
+        setting_modified = false;
+        // Only update the displayed preset number for HW presets
+        if (selected_preset < 4){
+          display_preset_num = selected_preset; 
+        }
+        break;
+      // store to preset  
+      case 0x0327:
+        selected_preset = (msg.param2 == 0x7f) ? 4 : msg.param2;
+        presets[selected_preset] = presets[5];
+        setting_modified = false;
+        // Only update the displayed preset number for HW presets
+        if (selected_preset < 4){
+          display_preset_num = selected_preset; 
+        }  
+        break;
+      // current selected preset
+      case 0x0310:
+        selected_preset = (msg.param2 == 0x7f) ? 4 : msg.param2;
+        if (msg.param1 == 0x01) 
+          selected_preset = 5;
+        presets[5] = presets[selected_preset];
+        // Only update the displayed preset number for HW presets
+        if (selected_preset < 4){
+          display_preset_num = selected_preset; 
+        }
+        break;
+       // Refresh preset info based on app-requested change
+
+      case 0x0364:
+        isTunerMode = true;
+        break;    
+         
+      case 0x0365:
+      case 0x0465:
+        isTunerMode = false;
+        break;       
+      
+      case 0x0438:
+        setting_modified = false;
+        break;
+      default:
+        break;
+    }
+
+    // all the processing for UI update
+    switch (cmdsub) {
+      case 0x0201:  
+         if (ui_update_in_progress) {
+           Serial.println("Updating UI");
+
+           strcpy(presets[5].Name, "SyncPreset");
+           strcpy(presets[5].UUID, "F00DF00D-FEED-0123-4567-987654321000");  
+           presets[5].curr_preset = 0x00;
+           presets[5].preset_num = 0x03;
+           app_msg_out.create_preset(&presets[5]);
+           app_process();
+           delay(100);
+           
+           app_msg_out.change_hardware_preset(0x00, 0x00);
+           app_process();
+           app_msg_out.change_hardware_preset(0x00, 0x03);     
+           app_process();
+
+           sp_bin.pass_through = true;
+           app_bin.pass_through = true;   
+           ui_update_in_progress = false;
+         }
+       break;
+    }
+          
+    return true;
+  }
+  else
+    return false;
+}
+
+void update_ui() {
+  sp_bin.pass_through = false;
+  app_bin.pass_through = false;
+    
+  app_msg_out.save_hardware_preset(0x00, 0x03);
+  app_process();
+  ui_update_in_progress = true;
+}
+
+///// ROUTINES TO CHANGE AMP SETTINGS
+
+void change_generic_model(char *new_eff, int slot) {
+  if (strcmp(presets[5].effects[slot].EffectName, new_eff) != 0) {
+    spark_msg_out.change_effect(presets[5].effects[slot].EffectName, new_eff);
+    strcpy(presets[5].effects[slot].EffectName, new_eff);
+    spark_process();
+    delay(100);
+  }
+}
+
+void change_comp_model(char *new_eff) {
+  change_generic_model(new_eff, 1);
+}
+
+void change_drive_model(char *new_eff) {
+  change_generic_model(new_eff, 2);
+}
+
+void change_amp_model(char *new_eff) {
+  if (strcmp(presets[5].effects[3].EffectName, new_eff) != 0) {
+    spark_msg_out.change_effect(presets[5].effects[3].EffectName, new_eff);
+    app_msg_out.change_effect(presets[5].effects[3].EffectName, new_eff);
+    strcpy(presets[5].effects[3].EffectName, new_eff);
+    spark_process();
+    app_process();
+    delay(100);
+  }
+}
+
+void change_mod_model(char *new_eff) {
+  change_generic_model(new_eff, 4);
+}
+
+void change_delay_model(char *new_eff) {
+  change_generic_model(new_eff, 5);
+}
+
+void change_generic_onoff(int slot,bool onoff) {
+  spark_msg_out.turn_effect_onoff(presets[5].effects[slot].EffectName, onoff);
+  app_msg_out.turn_effect_onoff(presets[5].effects[slot].EffectName, onoff);
+  presets[5].effects[slot].OnOff = onoff;
+  spark_process();
+  app_process();  
+}
+
+void change_noisegate_onoff(bool onoff) {
+  change_generic_onoff(0, onoff);  
+}
+
+void change_comp_onoff(bool onoff) {
+  change_generic_onoff(1, onoff);  
+}
+
+void change_drive_onoff(bool onoff) {
+  change_generic_onoff(2, onoff);  
+}
+
+void change_amp_onoff(bool onoff) {
+  change_generic_onoff(3, onoff);  
+}
+
+void change_mod_onoff(bool onoff) {
+  change_generic_onoff(4, onoff);  
+}
+
+void change_delay_onoff(bool onoff) {
+  change_generic_onoff(5, onoff);  
+}
+
+void change_reverb_onoff(bool onoff) {
+  change_generic_onoff(6, onoff);  
+}
+
+void change_generic_toggle(int slot) {
+  bool new_onoff;
+
+  new_onoff = !presets[5].effects[slot].OnOff;
+  
+  spark_msg_out.turn_effect_onoff(presets[5].effects[slot].EffectName, new_onoff);
+  app_msg_out.turn_effect_onoff(presets[5].effects[slot].EffectName, new_onoff);
+  presets[5].effects[slot].OnOff = new_onoff;
+  spark_process();
+  app_process();  
+}
+
+void change_noisegate_toggle() {
+  change_generic_toggle(0);  
+}
+
+void change_comp_toggle() {
+  change_generic_toggle(1);  
+}
+
+void change_drive_toggle() {
+  change_generic_toggle(2);  
+}
+
+void change_amp_toggle() {
+  change_generic_toggle(3);  
+}
+
+void change_mod_toggle() {
+  change_generic_toggle(4);  
+}
+
+void change_delay_toggle() {
+  change_generic_toggle(5);  
+}
+
+void change_reverb_toggle() {
+  change_generic_toggle(6);  
+}
+
+void change_generic_param(int slot, int param, float val) {
+/* float diff;
+
+  // some code to reduce the number of changes
+  diff = presets[5].effects[slot].Parameters[param] - val;
+  if (diff < 0) diff = -diff;
+  if (diff > 0.04) {
+*/
+  {
+    spark_msg_out.change_effect_parameter(presets[5].effects[slot].EffectName, param, val);
+    app_msg_out.change_effect_parameter(presets[5].effects[slot].EffectName, param, val);
+    presets[5].effects[slot].Parameters[param] = val;
+    spark_process();  
+    app_process();
+  }
+}
+
+void change_noisegate_param(int param, float val) {
+  change_generic_param(0, param, val);
+}
+
+void change_comp_param(int param, float val) {
+  change_generic_param(1, param, val);
+}
+
+void change_drive_param(int param, float val) {
+  change_generic_param(2, param, val);
+}
+
+void change_amp_param(int param, float val) {
+  change_generic_param(3, param, val);
+}
+
+void change_mod_param(int param, float val) {
+  change_generic_param(4, param, val);
+}
+
+void change_delay_param(int param, float val) {
+  change_generic_param(5, param, val);
+}
+
+void change_reverb_param(int param, float val){
+  change_generic_param(6, param, val);
+}
+
+void change_hardware_preset(int pres_num) {
+  if (pres_num >= 0 && pres_num <= 3) {  
+    presets[5] = presets[pres_num];
+    
+    spark_msg_out.change_hardware_preset(0, pres_num);
+    app_msg_out.change_hardware_preset(0, pres_num);  
+    spark_process();  
+    app_process();
+  }
+}
+
+void change_custom_preset(SparkPreset *preset, int pres_num) {
+  if (pres_num >= 0 && pres_num <= 4) {
+    preset->preset_num = (pres_num < 4) ? pres_num : 0x7f;
+    presets[5] = *preset;
+    presets[pres_num] = *preset;
+    
+    spark_msg_out.create_preset(preset);
+    spark_msg_out.change_hardware_preset(0, preset->preset_num);
+  }
+}
+
+void tuner_on_off(bool on_off) {
+  spark_msg_out.tuner_on_off(on_off);
+  spark_process();
+}
+
+
+
