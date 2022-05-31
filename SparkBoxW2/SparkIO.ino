@@ -75,7 +75,7 @@ void dump_buf(char *hdr, uint8_t *buf, int len) {
   Serial.print(buf[len-1], HEX);  
   
   int i;
-  for (i=0; i<0 ; i++) {
+  for (i = 0; i < len ; i++) {
     if (buf[i]<16) Serial.print("0");
     Serial.print(buf[i], HEX);
     Serial.print(" ");
@@ -246,13 +246,13 @@ void BlockIn::process() {
         rb_state++;
       }
       else {
-        Serial.print("Bad block header at position: ");
-        Serial.print(rb_state);
-        Serial.print(" data: ");
-        Serial.print(b, HEX);
-        Serial.print(" expected: ");
-        Serial.print(blk_hdr[rb_state], HEX);
-        Serial.println();
+        DEB("Bad block header at position: ");
+        DEB(rb_state);
+        DEB(" data: ");
+        DEB(b, HEX);
+        DEB(" expected: ");
+        DEB(blk_hdr[rb_state], HEX);
+        DEBUG();
         rb_state = 0;
         if (b == blk_hdr[rb_state])  // in case we found 0x01, the start of the header
           rb_state++;
@@ -263,31 +263,31 @@ void BlockIn::process() {
     else if (rb_state == 16) {
       rb->add(b);
       
-        
+/*        
       if (b < 16) Serial.print("0");
       Serial.print(b, HEX);
       Serial.print("+");     
-
+*/
       rb_len--;
       if (rb_len == 0) {
         rb_state = 0;
         rb->commit();
-        Serial.println();
+//        Serial.println();
       }
     }
     
     if (rb_state == 101) {
       rb->add(b);     
-
+/*
       if (b < 16) Serial.print("0");
       Serial.print(b, HEX);
       Serial.print("-");
-
+*/
       if (b == 0xf7) {
         rb_state == 0;
         rb->commit(); 
-        Serial.println();              
-      }  
+//        Serial.println();              
+      }
     }
   }
 }

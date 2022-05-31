@@ -1,5 +1,6 @@
 ///// ROUTINES TO SYNC TO AMP SETTINGS
 
+unsigned long sync_timer;
 int selected_preset;
 bool ui_update_in_progress;
 int preset_requested;
@@ -42,12 +43,12 @@ bool  update_spark_state() {
   if (conn_status[SPK] == false && spark_state != SPARK_DISCONNECTED) {
     spark_state = SPARK_DISCONNECTED;
     spark_ping_timer = millis();
-    DEBUG("SPARK DISCONNECTED, TRY TO CONNECT");
+    DEBUG("Spark disconnected, try to reconnect...");
   }
 
 
   if (spark_state == SPARK_DISCONNECTED) {
-    if (millis() - spark_ping_timer > 100) {
+    if (millis() - spark_ping_timer > 500) {
       spark_ping_timer = millis();
       connect_spark();  // reconnects if any disconnects happen    
     }
@@ -55,7 +56,7 @@ bool  update_spark_state() {
 
   if (conn_status[SPK] == true && spark_state == SPARK_DISCONNECTED) {
     spark_state = SPARK_CONNECTED;
-    DEBUG("SPARK CONNECTED");
+    DEBUG("Spark connected");
   }
 
   if (spark_state == SPARK_CONNECTED) {
@@ -63,17 +64,21 @@ bool  update_spark_state() {
       // every 0.5s ping the Spark amp to see if it will respond
       spark_ping_timer = millis();
       spark_msg_out.get_serial();
-      DEBUG("PINGING SPARK");  
+      DEBUG("Pinging Spark");  
     }  
   }
 
   if (spark_state == SPARK_SYNCING) {  
-    if (preset_requested <= 5 && preset_received == true) {
+    if (preset_received == true || millis() - sync_timer > 2000) { // we got the preset we were after or time out, and need to ask for the next one
+      if (preset_received == false) 
+        DEBUG("**** Preset not received, trying again");
+      sync_timer = millis();
       spark_msg_out.get_preset_details((preset_requested == 5) ? 0x0100 : preset_requested);
-      if (preset_requested <= 3)
-        spark_msg_out.change_hardware_preset(0, preset_requested);
+//      if (preset_requested <= 3)
+//        spark_msg_out.change_hardware_preset(0, preset_requested);
       preset_received = false;
-      DEBUG("REQUESTED A PRESET");  
+      DEB("Requested a preset: ");  
+      DEBUG(preset_requested);
     }
   }
 
@@ -93,8 +98,8 @@ bool  update_spark_state() {
   // and it is guaranteed that evaluation will stop as soon as the truth or falsehood is known.
   
   if (spark_msg_in.get_message(&cmdsub, &msg, &preset) || app_msg_in.get_message(&cmdsub, &msg, & preset)) {
-    Serial.print("Message: ");
-    Serial.println(cmdsub, HEX);
+    DEB("Message: ");
+    DEBUG(cmdsub, HEX);
 
     // all the processing for sync
     switch (cmdsub) {
@@ -102,14 +107,14 @@ bool  update_spark_state() {
       case 0x0323:
         if (spark_state == SPARK_CONNECTED) {
           spark_state = SPARK_COMMUNICATING;
-          DEBUG("RECEIVED SERIAL NUMBER - GOT CONNECTION");
+          DEBUG("Received serial number, got connection");
         }
         break;
       case 0x032a:
         if (spark_state == SPARK_CHECKSUM) {
           spark_state = SPARK_SYNCING;
-          DEBUG("GOT CHECKSUM");
-          delay(4000);
+          sync_timer = millis();
+          DEBUG("Got checksum");
         }
         break;       
       // full preset details
@@ -121,7 +126,7 @@ bool  update_spark_state() {
 
         presets[pres] = preset;
 
-        DEBUG("GOT A PRESET");
+        DEB("Got preset ");
         DEBUG(pres);
         
         if (spark_state == SPARK_SYNCING) {
@@ -137,7 +142,7 @@ bool  update_spark_state() {
             spark_state = SPARK_SYNCED;
             sp_bin.pass_through = true;
             app_bin.pass_through = true;             
-            DEBUG("FULLY SYNCED NOW");
+            DEBUG("Fully synced now");
           }
         }
 
@@ -146,7 +151,8 @@ bool  update_spark_state() {
           display_preset_num = pres; 
         }
         #ifdef DUMP_ON
-          Serial.printf("Send / receive new preset: %x\n", p);      
+          DEB("Send / receive new preset: ");
+          DEBUG(p, HEX);      
           dump_preset(preset);
         #endif
         break;
@@ -236,7 +242,7 @@ bool  update_spark_state() {
     switch (cmdsub) {
       case 0x0201:  
          if (ui_update_in_progress) {
-           Serial.println("Updating UI");
+           DEBUG("Updating UI");
 
            strcpy(presets[5].Name, "SyncPreset");
            strcpy(presets[5].UUID, "F00DF00D-FEED-0123-4567-987654321000");  
