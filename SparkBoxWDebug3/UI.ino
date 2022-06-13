@@ -1447,8 +1447,8 @@ bool savePresetToFile(SparkPreset presetToSave, const String &filePath) {
   noErr = serializeJson(doc, fJson);
  
   // PH debug line
-  serializeJson(doc, Serial);
-  DEBUG("");
+  //serializeJson(doc, Serial);
+  //DEBUG("");
   // PH debug line
     
   return noErr;

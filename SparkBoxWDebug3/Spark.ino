@@ -96,7 +96,7 @@ bool  update_spark_state() {
     spark_state = SPARK_CHECKSUM;
   }
 
-  if ((ui_update_in_progress == UI_HARDWARE) && hw_preset_received && (millis() - hw_preset_timer > 1000)) {
+  if ((ui_update_in_progress == UI_HARDWARE) && hw_preset_received && (millis() - hw_preset_timer > 2000)) {
     hw_preset_received = false;
     
     DEB("Asking for preset ");
@@ -321,6 +321,11 @@ bool  update_spark_state() {
 
            if (p >= 3 || hw_preset_requested >= 4) {  // last preset received
              ui_update_in_progress = UI_NONE;
+             // flip presets to refresh UI
+             app_msg_out.change_hardware_preset(0x00, 0x03);     
+             app_process();
+             app_msg_out.change_hardware_preset(0x00, 0x00);
+             app_process();
              sp_bin.pass_through = true;
              app_bin.pass_through = true;
            }
