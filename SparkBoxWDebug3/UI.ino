@@ -1413,9 +1413,9 @@ void parseJsonPreset(File &presetFile, SparkPreset &retPreset) {
       }   
       
       // PH debug lines
-//      serializeJson(doc, Serial);
-//      DEBUG("");
-//      dump_preset_detail(retPreset);
+      serializeJson(doc, Serial);
+      DEBUG("");
+      dump_preset_detail(retPreset);
       // PH debug lines
     }
   }

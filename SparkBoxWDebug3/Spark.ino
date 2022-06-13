@@ -142,6 +142,7 @@ bool  update_spark_state() {
           pres = 5;
 
         presets[pres] = preset;
+        dump_preset_detail(presets[pres]);
 
         DEB("Got preset ");
         DEBUG(pres);
@@ -170,7 +171,7 @@ bool  update_spark_state() {
         #ifdef DUMP_ON
           DEB("Send / receive new preset: ");
           DEBUG(p, HEX);      
-          dump_preset(preset);
+          dump_preset_detail(preset);
         #endif
 /*
         if (cmdsub == 0x0301 && ui_update_in_progress == UI_HARDWARE)
@@ -317,15 +318,21 @@ bool  update_spark_state() {
            presets[p].curr_preset = 0;
            presets[p].preset_num = ((p == 4) ? 0x7f : p);  
            app_msg_out.create_preset(&presets[p]);
+           DEB("Preset generated ");
+           DEBUG(p);
+           dump_preset_detail(presets[p]);
            app_process();
 
            if (p >= 3 || hw_preset_requested >= 4) {  // last preset received
              ui_update_in_progress = UI_NONE;
              // flip presets to refresh UI
+
+             // this will add a delay to bank changes so may not be great for a live performance
              app_msg_out.change_hardware_preset(0x00, 0x03);     
              app_process();
              app_msg_out.change_hardware_preset(0x00, 0x00);
              app_process();
+             
              sp_bin.pass_through = true;
              app_bin.pass_through = true;
            }
